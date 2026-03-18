@@ -7,14 +7,30 @@ Ready for future real-time streaming integration.
 
 import os
 import pyqtgraph as pg
+import logging
 from pyqtgraph.Qt import QtWidgets
 
+
+
+# Basic configuration for console output
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
 def explore_ecg_dataset(filepath: str) -> None:
-    """
-    Loads, parses, and plots ECG data from the specified filepath using PyQtGraph.
+    """Load, parse, and plot ECG data from the specified filepath using PyQtGraph.
+
+    Reads normalized ECG data, parses hexadecimal strings into byte arrays,
+    verifies that each waveform is exactly 181 bytes, and visualizes the
+    first waveform along with its R-peak.
+
+    Args:
+        filepath (str): Path to the CSV file containing the ECG data in hexadecimal format.
+
+    Example:
+        >>> explore_ecg_dataset("data/xNorm.csv")
     """
     if not os.path.exists(filepath):
-        print(f"Error: File '{filepath}' not found.")
+        logging.error(f"Error: File '{filepath}' not found.")
         return
 
     waveforms = []
@@ -32,22 +48,22 @@ def explore_ecg_dataset(filepath: str) -> None:
             try:
                 waveform_bytes = bytes.fromhex(hex_string)
             except ValueError as e:
-                print(f"Error parsing hex string: {e}")
+                logging.error(f"Error parsing hex string: {e}")
                 continue
                 
             # 3. Verify each waveform is exactly 181 bytes
             if len(waveform_bytes) != 181:
-                print(f"Warning: Found waveform with length {len(waveform_bytes)}")
+                logging.warning(f"Warning: Found waveform with length {len(waveform_bytes)}")
                 continue
                 
             waveforms.append(waveform_bytes)
 
     # Count waveforms
     total_waveforms = len(waveforms)
-    print(f"Total valid waveforms loaded: {total_waveforms}")
+    logging.info(f"Total valid waveforms loaded: {total_waveforms}")
 
     if total_waveforms == 0:
-        print("No valid waveforms found to plot.")
+        logging.info("No valid waveforms found to plot.")
         return
 
     # Take the first waveform for analysis
@@ -57,7 +73,7 @@ def explore_ecg_dataset(filepath: str) -> None:
     # 4. Calculate time duration
     sample_rate = 360  # Hz
     duration = len(amplitude_values) / sample_rate
-    print(f"Time duration of one waveform: {duration:.4f} seconds")
+    logging.info(f"Time duration of one waveform: {duration:.4f} seconds")
 
     time_axis = [i / sample_rate for i in range(len(amplitude_values))]
 
@@ -66,7 +82,7 @@ def explore_ecg_dataset(filepath: str) -> None:
     r_peak_index = amplitude_values.index(r_peak_amplitude)
     r_peak_time = time_axis[r_peak_index]
     
-    print(f"R-Peak identified at: Time = {r_peak_time:.4f}s, Amplitude = {r_peak_amplitude}")
+    logging.info(f"R-Peak identified at: Time = {r_peak_time:.4f}s, Amplitude = {r_peak_amplitude}")
 
     # ==========================================
     # PyQtGraph Visualization

@@ -3,12 +3,12 @@ from fpga_emulator import FPGAEmulator
 import serial
 import logging
 
-# --- Configuración Exclusiva del Logging para IACQ ---
+# --- Exclusive Logging Configuration for IACQ ---
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  
 logger.propagate = False        
 
-# Configuramos nuestros propios Handlers si no existen
+# Setting of handlers to avoid duplicate logs if this module is imported multiple times
 if not logger.handlers:
     file_handler = logging.FileHandler('fpga_communication.log')
     console_handler = logging.StreamHandler()
@@ -22,6 +22,17 @@ if not logger.handlers:
 
 class IACQ:
     def __init__(self, port, baud_rate=115200, timeout=1, emulator=False):
+        """Initialize the IACQ connection settings.
+
+        Args:
+            port (str): Serial port identifier (e.g., 'COM3' or '/dev/ttyUSB0').
+            baud_rate (int, optional): Communication baud rate. Defaults to 115200.
+            timeout (int, optional): Read/write timeout in seconds. Defaults to 1.
+            emulator (bool, optional): Flag to use the FPGA emulator instead of physical hardware. Defaults to False.
+
+        Example:
+            >>> fpga = IACQ('COM3', emulator=True)
+        """
         self.port = port
         self.baud_rate = baud_rate
         self.timeout = timeout
@@ -29,6 +40,12 @@ class IACQ:
         self.connection = None
 
     def open_connection(self):
+        """Open the connection to the FPGA or emulator.
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> fpga.open_connection()
+        """
         if self.use_emulator:
             self.connection = FPGAEmulator()
             self.connection.open()
@@ -39,6 +56,15 @@ class IACQ:
                 logger.info(f"Connection opened on {self.port}")  # Tarea 2: Log INFO
     
     def _open_serial(self):
+        """Open the physical serial connection.
+
+        Returns:
+            serial.Serial | None: The serial connection object, or None if the connection fails.
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> conn = fpga._open_serial()
+        """
         try:
             serialConnection = serial.Serial(self.port, self.baud_rate, timeout=self.timeout)
             return serialConnection
@@ -47,11 +73,29 @@ class IACQ:
             return None
         
     def close_connection(self):  
+        """Close the active connection to the FPGA or emulator.
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> fpga.open_connection()
+            >>> fpga.close_connection()
+        """
         if self.connection:
             self.connection.close()
             logger.info("Connection closed")  # Tarea 2: Log INFO
 
+
     def send_command(self, command):
+        """Send a raw command to the connected FPGA or emulator.
+
+        Args:
+            command (bytes | str): The command data to transmit.
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> fpga.open_connection()
+            >>> fpga.send_command(b'\\x4B' + b'\\x00'*16)
+        """
         if self.connection is None:
             logger.error("Connection not open. Call open_connection() first.")  # Tarea 5: Log ERROR
             return        
@@ -67,6 +111,17 @@ class IACQ:
             self.connection.write(command.encode())
 
     def read_response(self):   
+        """Read a line of response from the FPGA or emulator.
+
+        Returns:
+            str | None: The decoded response string, or None if the connection is not open.
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> response = fpga.read_response()
+            >>> print(response)
+            'OK'
+        """
         if self.connection is None:
             logger.error("Connection not open. Call open_connection() first.")  # Tarea 5: Log ERROR
             return None
@@ -82,9 +137,18 @@ class IACQ:
         return response
 
     def send_key(self, key: bytes):
-        """
-        Send the 16-byte encryption key (Command 'K').
-        Raises FPGAValidationError if input is invalid.
+        """Send the encryption key to the FPGA (Command 'K').
+
+        Args:
+            key (bytes): 16-byte ASCON-128 encryption key.
+
+        Raises:
+            FPGAValidationError: If key is not bytes type or not exactly 16 bytes.
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> fpga.open_connection()
+            >>> fpga.send_key(bytes.fromhex('8A55114D...'))
         """
         if not isinstance(key, bytes):
             raise FPGAValidationError(f"Key must be bytes, got {type(key).__name__}")
@@ -95,9 +159,18 @@ class IACQ:
         self._verify_ok_response("Key")
 
     def send_nonce(self, nonce: bytes):
-        """
-        Send the 16-byte nonce (Command 'N').
-        Raises FPGAValidationError if input is invalid.
+        """Send the cryptographic nonce to the FPGA (Command 'N').
+
+        Args:
+            nonce (bytes): 16-byte nonce.
+
+        Raises:
+            FPGAValidationError: If nonce is not bytes type or not exactly 16 bytes.
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> fpga.open_connection()
+            >>> fpga.send_nonce(bytes.fromhex('01234567...'))
         """
         if not isinstance(nonce, bytes):
             raise FPGAValidationError(f"Nonce must be bytes, got {type(nonce).__name__}")
@@ -108,9 +181,20 @@ class IACQ:
         self._verify_ok_response("Nonce")
 
     def send_ad(self, ad: bytes):
-        """
-        Send Associated Data (Command 'A'). Max 8 bytes.
-        Pads internally to 10 bytes: [AD padded to 8 bytes] + [0x80] + [0x00].
+        """Send Associated Data to the FPGA (Command 'A').
+        
+        Pads the input internally to 10 bytes: [AD padded to 8 bytes] + [0x80] + [0x00].
+
+        Args:
+            ad (bytes): Associated data, maximum of 8 bytes.
+
+        Raises:
+            FPGAValidationError: If Associated Data is not bytes type or exceeds 8 bytes.
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> fpga.open_connection()
+            >>> fpga.send_ad(b'Header12')
         """
         if not isinstance(ad, bytes):
             raise FPGAValidationError(f"Associated Data must be bytes, got {type(ad).__name__}")
@@ -124,34 +208,74 @@ class IACQ:
         self._verify_ok_response("Associated Data")
 
     def send_waveform(self, waveform: bytes):
-        """
-        Send ECG Waveform (Command 'W'). Exactly 181 bytes.
-        Pads internally to 184 bytes: [181 bytes data] + [0x80] + [0x00] + [0x00].
-        """
-        if not isinstance(waveform, bytes):
-            raise FPGAValidationError(f"Waveform must be bytes, got {type(waveform).__name__}")
-        if len(waveform) != 181:
-            raise FPGAValidationError(f"Waveform must be exactly 181 bytes, got {len(waveform)}")
+            """Send the ECG waveform data to the FPGA (Command 'W').
             
-        padded_waveform = waveform + b'\x80\x00\x00'
-        
-        self.send_command(bytes([0x57]) + padded_waveform)
-        self._verify_ok_response("Waveform")
+            Pads the input internally to 184 bytes: [181 bytes data] + [0x80] + [0x00] + [0x00].
+
+            Args:
+                waveform (bytes): Exactly 181 bytes of ECG waveform data.
+
+            Raises:
+                FPGAValidationError: If waveform is not bytes type or not exactly 181 bytes.
+
+            Example:
+                >>> fpga = IACQ('COM3')
+                >>> fpga.open_connection()
+                >>> fpga.send_waveform(b'\\x00' * 181)
+            """
+            if not isinstance(waveform, bytes):
+                raise FPGAValidationError(f"Waveform must be bytes, got {type(waveform).__name__}")
+            if len(waveform) != 181:
+                raise FPGAValidationError(f"Waveform must be exactly 181 bytes, got {len(waveform)}")
+                
+            padded_waveform = waveform + b'\x80\x00\x00'
+            
+            self.send_command(bytes([0x57]) + padded_waveform)
+            self._verify_ok_response("Waveform")
 
     def _verify_ok_response(self, context: str):
-        """Helper para verificar que la FPGA respondió con 'OK'."""
+        """Verify that the FPGA responded with 'OK'.
+
+        Args:
+            context (str): Description of the command sent, used for error reporting.
+
+        Raises:
+            FPGAProtocolError: If the response from the FPGA is not 'OK'.
+
+        Example:
+            >>> self._verify_ok_response("Key")
+        """
         response = self.read_response()
         if response != "OK":
             raise FPGAProtocolError(f"Failed to set {context}. Expected 'OK', got: '{response}'")   
 
     def __enter__(self):
+        """Context manager entry point. Opens the connection automatically.
+
+        Returns:
+            IACQ: The current instance of the class.
+
+        Example:
+            >>> with IACQ('COM3') as fpga:
+            ...     fpga.send_key(b'\\x00'*16)
+        """
         self.open_connection()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit point. Closes the connection automatically.
+
+        Args:
+            exc_type: The exception type, if an exception was raised.
+            exc_val: The exception value, if an exception was raised.
+            exc_tb: The traceback, if an exception was raised.
+
+        Returns:
+            bool: False to propagate any exceptions raised within the context block.
+        """
         self.close_connection() 
         return False
-    
+        
 if __name__ == "__main__":
     with IACQ(port='COM8', emulator=True) as iacq:
         
