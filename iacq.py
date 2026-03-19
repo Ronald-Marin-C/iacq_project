@@ -110,11 +110,14 @@ class IACQ:
             logger.debug(f"TX: {command} ({len(command)} bytes)")
             self.connection.write(command.encode())
 
-    def read_response(self):   
+    def read_response(self, size: int = None) -> bytes:
         """Read a line of response from the FPGA or emulator.
 
+        Args:
+            size: If provided, read exactly 'size' bytes. Otherwise, read a line.
+
         Returns:
-            str | None: The decoded response string, or None if the connection is not open.
+            bytes | None: The decoded response bytes, or None if the connection is not open.
 
         Example:
             >>> fpga = IACQ('COM3')
@@ -123,12 +126,16 @@ class IACQ:
             'OK'
         """
         if self.connection is None:
-            logger.error("Connection not open. Call open_connection() first.")  # Tarea 5: Log ERROR
+            logger.error("Connection not open. Call open_connection() first.") 
             return None
         
-        response = self.connection.readline().decode().strip()
+        if size:
+            # Read exact number of bytes
+            response = self.connection.read(size)
+        else:
+            # Read until newline
+            response = self.connection.readline()
         
-        # Tarea 4: Log WARNING para timeouts (si no llega nada en el tiempo establecido)
         if not response:
             logger.warning("Timeout: No response received from device.")
         else:
@@ -136,7 +143,7 @@ class IACQ:
             
         return response
 
-    def send_key(self, key: bytes):
+    def send_key(self, key: bytes) -> None:
         """Send the encryption key to the FPGA (Command 'K').
 
         Args:
@@ -156,9 +163,10 @@ class IACQ:
             raise FPGAValidationError(f"Key must be exactly 16 bytes, got {len(key)}")
             
         self.send_command(bytes([0x4B]) + key)
-        self._verify_ok_response("Key")
+        resp = self.read_response()
+        logger.debug(f"Key set response: {resp}")
 
-    def send_nonce(self, nonce: bytes):
+    def send_nonce(self, nonce: bytes)-> None:
         """Send the cryptographic nonce to the FPGA (Command 'N').
 
         Args:
@@ -178,9 +186,10 @@ class IACQ:
             raise FPGAValidationError(f"Nonce must be exactly 16 bytes, got {len(nonce)}")
             
         self.send_command(bytes([0x4E]) + nonce)
-        self._verify_ok_response("Nonce")
+        resp = self.read_response()
+        logger.debug(f"Nonce set response: {resp}")
 
-    def send_ad(self, ad: bytes):
+    def send_associated_data(self, ad: bytes):
         """Send Associated Data to the FPGA (Command 'A').
         
         Pads the input internally to 10 bytes: [AD padded to 8 bytes] + [0x80] + [0x00].
@@ -194,7 +203,7 @@ class IACQ:
         Example:
             >>> fpga = IACQ('COM3')
             >>> fpga.open_connection()
-            >>> fpga.send_ad(b'Header12')
+            >>> fpga.send_associated_data(b'Header12')
         """
         if not isinstance(ad, bytes):
             raise FPGAValidationError(f"Associated Data must be bytes, got {type(ad).__name__}")
@@ -205,10 +214,11 @@ class IACQ:
         padded_ad = ad.ljust(8, b'\x00') + b'\x80\x00'
         
         self.send_command(bytes([0x41]) + padded_ad)
-        self._verify_ok_response("Associated Data")
+        resp = self.read_response()
+        logger.debug(f"AD set response: {resp}")
 
-    def send_waveform(self, waveform: bytes):
-            """Send the ECG waveform data to the FPGA (Command 'W').
+    def send_waveform_to_fpga(self, waveform: bytes):
+            """Send 181-byte waveform with 184-byte padding (Command 'W').
             
             Pads the input internally to 184 bytes: [181 bytes data] + [0x80] + [0x00] + [0x00].
 
@@ -221,17 +231,20 @@ class IACQ:
             Example:
                 >>> fpga = IACQ('COM3')
                 >>> fpga.open_connection()
-                >>> fpga.send_waveform(b'\\x00' * 181)
+                >>> fpga.send_waveform_to_fpga(b'\\x00' * 181)
             """
             if not isinstance(waveform, bytes):
                 raise FPGAValidationError(f"Waveform must be bytes, got {type(waveform).__name__}")
             if len(waveform) != 181:
                 raise FPGAValidationError(f"Waveform must be exactly 181 bytes, got {len(waveform)}")
-                
+            
             padded_waveform = waveform + b'\x80\x00\x00'
             
             self.send_command(bytes([0x57]) + padded_waveform)
-            self._verify_ok_response("Waveform")
+            resp = self.read_response()
+            logger.debug(f"Waveform sent response: {resp}")
+        
+    
 
     def _verify_ok_response(self, context: str):
         """Verify that the FPGA responded with 'OK'.
@@ -248,6 +261,56 @@ class IACQ:
         response = self.read_response()
         if response != "OK":
             raise FPGAProtocolError(f"Failed to set {context}. Expected 'OK', got: '{response}'")   
+        
+    def start_encryption(self) -> None:
+        """Trigger the ASCON encryption process on the FPGA (Command 'G').
+
+        Example:
+            >>> fpga = IACQ('COM3')
+            >>> fpga.open_connection()
+            >>> # ... send key, nonce, ad, waveform ...
+            >>> fpga.start_encryption()
+        """
+        self.send_command(bytes([0x47]))
+        resp = self.read_response()
+        logger.debug(f"Encryption trigger response: {resp}")
+
+    def get_tag(self) -> bytes:
+        """Retrieve the 16-byte authentication tag from the FPGA (Command 'T').
+
+        Returns:
+            bytes: The 16-byte ASCON authentication tag.
+
+        Example:
+            >>> tag = fpga.get_tag()
+            >>> print(tag.hex().upper())
+        """
+        self.send_command(bytes([0x54]))
+        tag = self.read_response(size=16) # Read the 16 bytes of the tag
+        ok_status = self.read_response() # Read the trailing 'OK\n'
+        return tag
+
+    def get_ciphertext(self) -> bytes:
+        """Retrieve the ciphertext and strip internal padding (Command 'C').
+        
+        Reads 184 bytes from the FPGA (181 bytes of encrypted data + 3 bytes 
+        of padding) and returns only the original 181-byte payload.
+
+        Returns:
+            bytes: The decrypted 181-byte ciphertext.
+
+        Example:
+            >>> ciphertext = fpga.get_ciphertext()
+            >>> len(ciphertext)
+            181
+        """
+        self.send_command(bytes([0x43]))
+        # Read the 184 bytes (181 ciphertext + 3 padding)
+        padded_ciphertext = self.read_response(size=184)
+        ok_status = self.read_response() # Read the trailing 'OK\n'
+        
+        # Strip the last 3 bytes of padding and return
+        return padded_ciphertext[:181]
 
     def __enter__(self):
         """Context manager entry point. Opens the connection automatically.
