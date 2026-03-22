@@ -15,7 +15,21 @@ logger = logging.getLogger(__name__)
 logging.getLogger('FPGAEmulator').setLevel(logging.WARNING)
 
 def load_all_waveforms(csv_path: str = "data/xNorm.csv") -> list[bytes]:
-    """Load all waveforms from the CSV file."""
+    """Load all waveforms from the specified CSV file.
+
+    Args:
+        csv_path (str, optional): Path to the CSV file containing ECG data in hex format. Defaults to "data/xNorm.csv".
+
+    Returns:
+        list[bytes]: A list where each element is a parsed waveform as bytes.
+
+    Raises:
+        FileNotFoundError: If the specified CSV file does not exist.
+
+    Example:
+        >>> waveforms = load_all_waveforms("data/xNorm.csv")
+        >>> print(f"Loaded {len(waveforms)} waveforms")
+    """
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Dataset not found at {csv_path}")
 
@@ -28,7 +42,22 @@ def load_all_waveforms(csv_path: str = "data/xNorm.csv") -> list[bytes]:
     return waveforms
 
 def run_pipeline(fpga: IACQ, waveforms: list[bytes], key: bytes, nonce: bytes, associated_data: bytes) -> None:
-    """Run encrypt/decrypt pipeline on multiple waveforms and calculate metrics."""
+    """Run the encrypt/decrypt pipeline on multiple waveforms and calculate performance metrics.
+
+    Iterates through a list of waveforms, encrypts them on the FPGA, decrypts them 
+    in software, verifies data integrity, and calculates processing time and throughput.
+
+    Args:
+        fpga (IACQ): An open instance of the IACQ class connected to the FPGA or emulator.
+        waveforms (list[bytes]): A list of ECG waveforms (as bytes) to process.
+        key (bytes): 16-byte ASCON-128 encryption key.
+        nonce (bytes): 16-byte cryptographic nonce.
+        associated_data (bytes): Associated data for the encryption process.
+
+    Example:
+        >>> with IACQ('COM3') as fpga:
+        ...     run_pipeline(fpga, my_waveforms, key, nonce, ad)
+    """
     results = []
     errors = 0
     total_waveforms = len(waveforms)

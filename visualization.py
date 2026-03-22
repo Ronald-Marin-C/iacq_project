@@ -22,6 +22,21 @@ TEST_AD = b"A to B"
 BUFFER_SIZE = 1800  # 5 seconds of rolling window
 
 def load_all_waveforms(csv_path: str = "data/xNorm.csv") -> list[bytes]:
+    """Load all valid waveforms from the specified CSV file.
+
+    Args:
+        csv_path (str, optional): Path to the CSV file containing ECG data in hex format. Defaults to "data/xNorm.csv".
+
+    Returns:
+        list[bytes]: A list where each element is a parsed waveform as bytes.
+
+    Raises:
+        FileNotFoundError: If the specified CSV file does not exist.
+
+    Example:
+        >>> waveforms = load_all_waveforms("data/xNorm.csv")
+        >>> print(f"Loaded {len(waveforms)} waveforms")
+    """
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Dataset not found at {csv_path}")
     waveforms = []
@@ -57,7 +72,17 @@ buffer = deque(maxlen=BUFFER_SIZE)
 frame_idx = 0
 
 def update():
-    """Timer callback function for real-time updates"""
+    """Timer callback function for real-time plot updates.
+
+    Fetches the next waveform, processes it through the ASCON hardware/software 
+    pipeline, appends the decrypted data to a rolling buffer, and updates the 
+    PyQtGraph curve. Designed to be called continuously by a QTimer.
+
+    Example:
+        >>> timer = QtCore.QTimer()
+        >>> timer.timeout.connect(update)
+        >>> timer.start(25)
+    """
     global frame_idx
     
     # 1. Get new waveform
