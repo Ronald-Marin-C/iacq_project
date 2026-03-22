@@ -7,7 +7,8 @@ import time
 
 # --- Exclusive Logging Configuration for IACQ ---
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  
+#logger.setLevel(logging.DEBUG)  # Debug
+logger.setLevel(logging.INFO)  # Performance
 logger.propagate = False        
 
 # Setting of handlers to avoid duplicate logs if this module is imported multiple times

@@ -55,7 +55,58 @@ This library supports both physical hardware and a software emulator for develop
 | No Logs Output | Emulators overriding the logging configuration. | Ensure `logger.propagate = False` is set in your main script configuration. |
 
 
+# Session 2 Notes - Ronald Marín
+
+## 1. Encryption Protocol
+
+### Command Sequence
+1. K - Load encryption key (16 bytes)
+2. N - Set nonce (16 bytes)
+3. A - Set associated data (padded to 10 bytes)
+4. W - Send waveform data (padded to 184 bytes)
+5. G - Start encryption
+6. T - Retrieve authentication tag (16 bytes)
+7. C - Retrieve ciphertext (181 bytes extracted from 184 bytes)
+
+### Flow Diagram
+```text
+[Plaintext Waveform 181B] + [Padding 3B]
+           |
+           v
++-------------------------+
+| FPGA Hardware (ASCON)   | <--- Key (16B), Nonce (16B), AD
++-------------------------+
+           |
+           v
+[Ciphertext 181B] + [Tag 16B]
+
 
 Sphinx
 
+
+Q8
+Why might code work in the emulator but fail on hardware?
+
+The emulator uses different encryption
+Hardware has physical delays and limited buffers
+Python behaves differently with hardware
+The FPGA has a different protocol
+
+## Performance Benchmarking
+To verify the system's readiness for real-time medical monitoring, a stress test was conducted using the full encryption/decryption pipeline.
+
+### Test Configuration
+- **Dataset:** 5,000 ECG waveforms (181 bytes each).
+- **Mode:** FPGA Emulator (simulated UART @ 115200 baud).
+- **Operations per cycle:** 7 UART commands (K, N, A, W, G, T, C) + Python-side ASCON decryption.
+
+### Results
+| Metric | Value |
+| :--- | :--- |
+| **Total Processed** | 5,000 waveforms |
+| **Success Rate** | 100% (0 errors) |
+| **Avg. Latency per Cycle** | 125.44 ms |
+| **System Throughput** | **7.97 waveforms/sec** |
+
+**Analysis:** With a throughput of nearly 8 waveforms per second, the system is ~8x faster than a standard human heart rate (60 BPM / 1 Hz). This provides a significant safety margin for real-time processing, even during high-stress physiological conditions (tachycardia) or multi-sensor environments.
 pdoc3

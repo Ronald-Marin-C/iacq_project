@@ -5,9 +5,9 @@ Implementation of Ascon v1.2, an authenticated cipher and hash function
 http://ascon.iaik.tugraz.at/
 """
 
-debug = True
-debugpermutation = True
-debugtransformation = True
+debug = False
+debugpermutation = False
+debugtransformation = False
 debugFull = False
 
 # === Ascon hash/xof ===
@@ -135,7 +135,7 @@ def ascon_initialize(S, k, rate, a, b, key, nonce):
     #if debug: printstate(S, "initial value:")
     if debug: printstate(S, "Valeur initiale    : ")
 
-    debugtransformation = True
+    debugtransformation = False
     ascon_permutation(S, a)
     debugtransformation = False
     
