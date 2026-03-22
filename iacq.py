@@ -244,7 +244,6 @@ class IACQ:
             resp = self.read_response()
             logger.debug(f"Waveform sent response: {resp}")
         
-    
 
     def _verify_ok_response(self, context: str):
         """Verify that the FPGA responded with 'OK'.
@@ -340,27 +339,41 @@ class IACQ:
         return False
         
 if __name__ == "__main__":
-    with IACQ(port='COM8', emulator=True) as iacq:
-        
-        logger.info("--- Iniciando pruebas de validación ---")
-        
-        # 1. Prueba Exitosa (16 bytes)
+    logger.info("--- Starting Full FPGA Protocol Test ---")
+    
+    with IACQ(port='COM8', emulator=True) as fpga:
         try:
-            valid_key = bytes.fromhex("8A55114D1CB6A9A2BE263D4D7AECAAFF")
-            iacq.send_key(valid_key)
-            logger.info("Prueba de llave válida: PASÓ")
+            # 1. Setup Test Data
+            test_key = bytes.fromhex("8A55114D1CB6A9A2BE263D4D7AECAAFF")
+            test_nonce = bytes.fromhex("4ED0EC0B98C529B7C8CDDF37BCD0284A")
+            test_ad = b"A to B"
+            dummy_waveform = bytes([128] * 181) # 181 bytes of dummy ECG data (flatline)
+            
+            # 2. Execute Encryption Pipeline
+            logger.info("Step 1: Sending Key...")
+            fpga.send_key(test_key)
+            
+            logger.info("Step 2: Sending Nonce...")
+            fpga.send_nonce(test_nonce)
+            
+            logger.info("Step 3: Sending Associated Data...")
+            fpga.send_associated_data(test_ad)
+            
+            logger.info("Step 4: Sending Waveform...")
+            fpga.send_waveform_to_fpga(dummy_waveform)
+            
+            logger.info("Step 5: Starting Encryption...")
+            fpga.start_encryption()
+            
+            logger.info("Step 6: Retrieving Tag...")
+            tag = fpga.get_tag()
+            logger.info(f"[SUCCESS] Retrieved Tag: {tag.hex().upper()}")
+            
+            logger.info("Step 7: Retrieving Ciphertext...")
+            ciphertext = fpga.get_ciphertext()
+            logger.info(f"[SUCCESS] Retrieved Ciphertext ({len(ciphertext)} bytes). First 10 bytes: {ciphertext[:10].hex().upper()}")
+            
+            logger.info("--- Protocol Test Completed Successfully! ---")
+            
         except Exception as e:
-            logger.error(f"Error inesperado: {e}")
-
-        # 2. Prueba de Falla Rápida: Tipo incorrecto
-        try:
-            iacq.send_key("esto es un string, no bytes")
-        except FPGAValidationError as e:
-            logger.info(f"Falla detectada correctamente (Tipo): {e}")
-
-        # 3. Prueba de Falla Rápida: Longitud incorrecta (15 bytes)
-        try:
-            invalid_length_key = bytes.fromhex("8A55114D1CB6A9A2BE263D4D7AECAA") # Falta 1 byte
-            iacq.send_key(invalid_length_key)
-        except FPGAValidationError as e:
-            logger.info(f"Falla detectada correctamente (Longitud): {e}")
+            logger.error(f"Pipeline Test Failed: {e}")
