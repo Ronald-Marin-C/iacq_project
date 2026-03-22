@@ -1,7 +1,9 @@
-from exceptions import FPGAConnectionError, FPGATimeoutError, FPGAValidationError, FPGAProtocolError
+from exceptions import FPGAConnectionError, FPGATimeoutError, FPGAValidationError, FPGAProtocolError, FPGAAuthenticationError
+from ascon_pcsn import ascon_decrypt
 from fpga_emulator import FPGAEmulator
 import serial
 import logging
+import time
 
 # --- Exclusive Logging Configuration for IACQ ---
 logger = logging.getLogger(__name__)
@@ -21,7 +23,7 @@ if not logger.handlers:
     logger.addHandler(console_handler)
 
 class IACQ:
-    def __init__(self, port, baud_rate=115200, timeout=1, emulator=False):
+    def __init__(self, port, baud_rate=115200, timeout=1, emulator=False, max_retries=3):
         """Initialize the IACQ connection settings.
 
         Args:
@@ -37,6 +39,7 @@ class IACQ:
         self.baud_rate = baud_rate
         self.timeout = timeout
         self.use_emulator = emulator
+        self.max_retries = max_retries
         self.connection = None
 
     def open_connection(self):
@@ -110,38 +113,6 @@ class IACQ:
             logger.debug(f"TX: {command} ({len(command)} bytes)")
             self.connection.write(command.encode())
 
-    def read_response(self, size: int = None) -> bytes:
-        """Read a line of response from the FPGA or emulator.
-
-        Args:
-            size: If provided, read exactly 'size' bytes. Otherwise, read a line.
-
-        Returns:
-            bytes | None: The decoded response bytes, or None if the connection is not open.
-
-        Example:
-            >>> fpga = IACQ('COM3')
-            >>> response = fpga.read_response()
-            >>> print(response)
-            'OK'
-        """
-        if self.connection is None:
-            logger.error("Connection not open. Call open_connection() first.") 
-            return None
-        
-        if size:
-            # Read exact number of bytes
-            response = self.connection.read(size)
-        else:
-            # Read until newline
-            response = self.connection.readline()
-        
-        if not response:
-            logger.warning("Timeout: No response received from device.")
-        else:
-            logger.debug(f"RX: {response}")  # Tarea 3: Log DEBUG para datos recibidos
-            
-        return response
 
     def send_key(self, key: bytes) -> None:
         """Send the encryption key to the FPGA (Command 'K').
@@ -245,22 +216,6 @@ class IACQ:
             logger.debug(f"Waveform sent response: {resp}")
         
 
-    def _verify_ok_response(self, context: str):
-        """Verify that the FPGA responded with 'OK'.
-
-        Args:
-            context (str): Description of the command sent, used for error reporting.
-
-        Raises:
-            FPGAProtocolError: If the response from the FPGA is not 'OK'.
-
-        Example:
-            >>> self._verify_ok_response("Key")
-        """
-        response = self.read_response()
-        if response != "OK":
-            raise FPGAProtocolError(f"Failed to set {context}. Expected 'OK', got: '{response}'")   
-        
     def start_encryption(self) -> None:
         """Trigger the ASCON encryption process on the FPGA (Command 'G').
 
@@ -310,6 +265,117 @@ class IACQ:
         
         # Strip the last 3 bytes of padding and return
         return padded_ciphertext[:181]
+    
+    # ==========================================
+    # HIGH-LEVEL PIPELINE METHODS (ACTIVITY 2.4)
+    # ==========================================
+
+    def encrypt_on_fpga(self, waveform: bytes, key: bytes, nonce: bytes, associated_data: bytes) -> tuple[bytes, bytes]:
+        """Execute the full encryption sequence on the FPGA.
+
+        Args:
+            waveform (bytes): 181-byte ECG waveform data.
+            key (bytes): 16-byte ASCON-128 encryption key.
+            nonce (bytes): 16-byte nonce.
+            associated_data (bytes): Up to 8 bytes of associated data.
+
+        Returns:
+            tuple[bytes, bytes]: A tuple containing (ciphertext, tag).
+        """
+        self.send_key(key)
+        self.send_nonce(nonce)
+        self.send_associated_data(associated_data)
+        self.send_waveform_to_fpga(waveform)
+        self.start_encryption()
+        
+        tag = self.get_tag()
+        ciphertext = self.get_ciphertext()
+        
+        return ciphertext, tag
+
+    def decrypt_waveform(self, ciphertext: bytes, tag: bytes, key: bytes, nonce: bytes, associated_data: bytes) -> bytes:
+        """Decrypt ciphertext received from the FPGA using the Python ASCON library.
+
+        Args:
+            ciphertext (bytes): 181-byte encrypted payload.
+            tag (bytes): 16-byte authentication tag.
+            key (bytes): 16-byte encryption key.
+            nonce (bytes): 16-byte nonce.
+            associated_data (bytes): Associated data used during encryption.
+
+        Returns:
+            bytes: The decrypted 181-byte plaintext waveform.
+
+        Raises:
+            FPGAAuthenticationError: If the tag verification fails.
+        """
+        # The reference ascon_pcsn library expects the tag to be appended to the ciphertext
+        combined_data = ciphertext + tag
+        
+        decrypted = ascon_decrypt(key, nonce, associated_data, combined_data)
+        
+        if decrypted is None:
+            raise FPGAAuthenticationError("Authentication failed: Ciphertext or Tag has been tampered with.")
+            
+        return decrypted
+    
+    # ==========================================
+    # CHANGE METHODS (ACTIVITY 2.5)
+    # ==========================================
+    def reconnect(self, delay: float = 1.0) -> None:
+        """Attempt to recover a dropped connection (Task 5).
+        
+        Closes the current connection, waits briefly, and attempts to reopen.
+        Raises FPGAConnectionError if all retries fail.
+        """
+        logger.warning("Attempting to recover connection to FPGA...")
+        self.close_connection()
+        
+        for attempt in range(self.max_retries):
+            time.sleep(delay)
+            try:
+                self.open_connection()
+                if self.connection:
+                    logger.info("Connection recovered successfully.")
+                    return
+            except Exception as e:
+                logger.warning(f"Reconnection attempt {attempt + 1} failed: {e}")
+                
+        raise FPGAConnectionError(f"Failed to reconnect after {self.max_retries} attempts.")
+
+    def read_response(self, size: int = None) -> bytes:
+        """Read response from device with retry logic for timeouts (Task 3)."""
+        if self.connection is None:
+            raise FPGAConnectionError("Connection not open.")
+        
+        for attempt in range(self.max_retries):
+            if size:
+                response = self.connection.read(size)
+            else:
+                response = self.connection.readline()
+                
+            if response:
+                logger.debug(f"RX: {response}")
+                return response
+                
+            logger.warning(f"Timeout reading from device (Attempt {attempt + 1}/{self.max_retries}). Retrying...")
+            time.sleep(0.5)
+            
+        raise FPGATimeoutError(f"Exhausted {self.max_retries} retries. No response received from device.")
+
+    def _verify_ok_response(self, context: str):
+        """Verify the 'OK' acknowledgment, handling unexpected formats (Task 4)."""
+        response = self.read_response()
+        
+        try:
+            resp_str = response.decode('utf-8').strip()
+            if resp_str == "OK":
+                return # Validation passed
+        except UnicodeDecodeError:
+            pass # It's not a valid string, so it's definitely not "OK"
+            
+        # If we reach here, the response was not "OK"
+        raise FPGAProtocolError(f"Unexpected format setting {context}. Expected 'OK', got raw hex: {response.hex()}")
 
     def __enter__(self):
         """Context manager entry point. Opens the connection automatically.
@@ -339,41 +405,113 @@ class IACQ:
         return False
         
 if __name__ == "__main__":
-    logger.info("--- Starting Full FPGA Protocol Test ---")
+    logger.info("--- Starting Activity 2.5: Error Handling & Edge Cases ---")
     
     with IACQ(port='COM8', emulator=True) as fpga:
         try:
-            # 1. Setup Test Data
+            # 1. Setup Parameters
+            correct_key = bytes.fromhex("8A55114D1CB6A9A2BE263D4D7AECAAFF")
+            wrong_key = bytes([0] * 16) # 16 zero bytes (The "Hacker" key)
+            test_nonce = bytes.fromhex("4ED0EC0B98C529B7C8CDDF37BCD0284A")
+            test_ad = b"A to B"
+            
+            # Load waveform
+            with open("data/xNorm.csv", "r") as f:
+                original_waveform = bytes.fromhex(f.readline().strip())
+            
+            # 2. Encrypt normally with CORRECT key
+            logger.info("Encrypting with CORRECT key...")
+            ciphertext, tag = fpga.encrypt_on_fpga(original_waveform, correct_key, test_nonce, test_ad)
+            
+            # 3. Decrypt with WRONG key (Task 2)
+            logger.info("Attempting to decrypt with WRONG key...")
+            decrypted_waveform = fpga.decrypt_waveform(ciphertext, tag, wrong_key, test_nonce, test_ad)
+            
+            # If we reach here, ASCON is broken!
+            logger.error("CRITICAL FAILURE: Decryption succeeded with the wrong key!")
+
+        except FPGAAuthenticationError as e:
+            logger.info(f"[SUCCESS] Wrong Key Test passed. Caught expected error: {e}")
+        except Exception as e:
+            logger.error(f"Test Failed with unexpected error: {e}")
+            
+        # 4. Connection Recovery Test (Task 5)
+        logger.info("--- Testing Connection Recovery ---")
+        try:
+            fpga.reconnect()
+        except Exception as e:
+            logger.error(f"Reconnection failed: {e}")
+    logger.info("--- Starting AEAD Security Failure Test ---")
+    
+    with IACQ(port='COM8', emulator=True) as fpga:
+        try:
+            # 1. Setup Parameters
             test_key = bytes.fromhex("8A55114D1CB6A9A2BE263D4D7AECAAFF")
             test_nonce = bytes.fromhex("4ED0EC0B98C529B7C8CDDF37BCD0284A")
             test_ad = b"A to B"
-            dummy_waveform = bytes([128] * 181) # 181 bytes of dummy ECG data (flatline)
             
-            # 2. Execute Encryption Pipeline
-            logger.info("Step 1: Sending Key...")
-            fpga.send_key(test_key)
+            # Load waveform
+            with open("data/xNorm.csv", "r") as f:
+                original_waveform = bytes.fromhex(f.readline().strip())
             
-            logger.info("Step 2: Sending Nonce...")
-            fpga.send_nonce(test_nonce)
+            # 2. High-Level Encryption
+            ciphertext, tag = fpga.encrypt_on_fpga(original_waveform, test_key, test_nonce, test_ad)
             
-            logger.info("Step 3: Sending Associated Data...")
-            fpga.send_associated_data(test_ad)
+            # ======================================================
+            # 3. HACKER SIMULATION: Tamper with the Ciphertext
+            # ======================================================
+            logger.info(">>> MALICIOUS ACTOR: Tampering with 1 byte of the ciphertext...")
+            tampered_ciphertext = bytearray(ciphertext)
             
-            logger.info("Step 4: Sending Waveform...")
-            fpga.send_waveform_to_fpga(dummy_waveform)
+            # Let's corrupt just the very first byte by flipping its bits (XOR 0xFF)
+            tampered_ciphertext[0] ^= 0xFF 
+            tampered_ciphertext = bytes(tampered_ciphertext)
             
-            logger.info("Step 5: Starting Encryption...")
-            fpga.start_encryption()
+            # ======================================================
             
-            logger.info("Step 6: Retrieving Tag...")
-            tag = fpga.get_tag()
-            logger.info(f"[SUCCESS] Retrieved Tag: {tag.hex().upper()}")
+            # 4. High-Level Decryption (Software) - THIS SHOULD FAIL!
+            logger.info("Decrypting tampered data in Python...")
+            decrypted_waveform = fpga.decrypt_waveform(tampered_ciphertext, tag, test_key, test_nonce, test_ad)
             
-            logger.info("Step 7: Retrieving Ciphertext...")
-            ciphertext = fpga.get_ciphertext()
-            logger.info(f"[SUCCESS] Retrieved Ciphertext ({len(ciphertext)} bytes). First 10 bytes: {ciphertext[:10].hex().upper()}")
-            
-            logger.info("--- Protocol Test Completed Successfully! ---")
-            
+            # If we reach here, ASCON failed to protect us
+            logger.error("CRITICAL SECURITY FAILURE: ASCON decrypted tampered data!")
+
+        except FPGAAuthenticationError as e:
+            logger.info(f">>> [SUCCESSFUL DEFENSE] Security caught the tampering: {e}")
         except Exception as e:
-            logger.error(f"Pipeline Test Failed: {e}")
+            logger.error(f"Test Failed with unexpected error: {e}")
+    logger.info("--- Starting End-to-End Cross-Platform Validation ---")
+    
+    with IACQ(port='COM8', emulator=True) as fpga:
+        try:
+            # 1. Setup Parameters
+            test_key = bytes.fromhex("8A55114D1CB6A9A2BE263D4D7AECAAFF")
+            test_nonce = bytes.fromhex("4ED0EC0B98C529B7C8CDDF37BCD0284A")
+            test_ad = b"A to B"
+            
+            # 2. Load the first waveform from xNorm.csv
+            csv_path = "data/xNorm.csv"
+            with open(csv_path, "r") as f:
+                first_line = f.readline().strip()
+                original_waveform = bytes.fromhex(first_line)
+            
+            logger.info(f"Loaded original waveform: {len(original_waveform)} bytes")
+            
+            # 3. High-Level Encryption (Hardware/Emulator)
+            logger.info("Encrypting on FPGA...")
+            ciphertext, tag = fpga.encrypt_on_fpga(original_waveform, test_key, test_nonce, test_ad)
+            
+            # 4. High-Level Decryption (Software)
+            logger.info("Decrypting in Python...")
+            decrypted_waveform = fpga.decrypt_waveform(ciphertext, tag, test_key, test_nonce, test_ad)
+            
+            # 5. Validate Identity
+            if original_waveform == decrypted_waveform:
+                logger.info("[SUCCESS] Cross-platform validation passed! Decrypted data is byte-for-byte identical.")
+            else:
+                logger.error("[ERROR] Validation failed. Data mismatch.")
+                
+        except FPGAAuthenticationError as e:
+            logger.error(f"[SECURITY ALERT] {e}")
+        except Exception as e:
+            logger.error(f"Test Failed: {e}")

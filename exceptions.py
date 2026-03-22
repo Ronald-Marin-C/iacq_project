@@ -47,3 +47,15 @@ class FPGAProtocolError(FPGAError):
         ...     raise FPGAProtocolError("Expected 'OK', got an invalid response")
     """
     pass
+
+class FPGAAuthenticationError(FPGAError):
+    """Exception raised when authentication fails during decryption.
+    
+    This usually indicates a tag mismatch, corrupted data during 
+    transmission, or an incorrect key/nonce combination.
+
+    Example:
+        >>> if received_tag != expected_tag:
+        ...     raise FPGAAuthenticationError("Tag mismatch: Data integrity not verified")
+    """
+    pass
