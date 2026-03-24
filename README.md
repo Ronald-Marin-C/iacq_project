@@ -81,7 +81,7 @@ This library supports both physical hardware and a software emulator for develop
 [Ciphertext 181B] + [Tag 16B]
 
 
-Sphinx
+
 
 
 Q8
@@ -109,4 +109,22 @@ To verify the system's readiness for real-time medical monitoring, a stress test
 | **System Throughput** | **7.97 waveforms/sec** |
 
 **Analysis:** With a throughput of nearly 8 waveforms per second, the system is ~8x faster than a standard human heart rate (60 BPM / 1 Hz). This provides a significant safety margin for real-time processing, even during high-stress physiological conditions (tachycardia) or multi-sensor environments.
-pdoc3
+
+
+## Security Analysis: The Danger of Nonce Reuse
+This project includes a formal security test suite (`tests/test_security.py`) to validate ASCON-128 AEAD properties. Beyond standard Bit-Flip and Wrong-Key tests, we implemented a specific test demonstrating **Nonce Reuse vulnerabilities**.
+
+Unlike standard stream ciphers where nonce reuse leaks the XOR of the entire plaintext, ASCON utilizes a **Sponge Construction**. Our tests successfully prove that:
+1. Reusing a nonce perfectly leaks the XOR of the plaintexts **only for the first block** (the 8-byte rate of ASCON-128).
+2. After the first difference, the internal sponge state diverges, protecting the rest of the message.
+This demonstrates both the vulnerability of poor nonce management and the resilience of the sponge architecture.
+
+## Hardware Authenticity (Bitstream Verification)
+To verify that the hardware implementation was compiled locally rather than using pre-compiled binaries, SHA-256 hashes were computed for the generated bitstreams. Vivado embeds unique build timestamps, ensuring unique binaries even for identical source code.
+
+| File | SHA-256 Hash |
+| :--- | :--- |
+| `inter_spartan.bit` (Provided) | `32A3810828796B11F369C86B1876A3DEF37AEAFB29CC6C2835153BA1B8F0A3FD` |
+| `ECG.bit` (Custom Build) | `199AF6DE57FE0944A77803C650EF321CBA33B535B2859A36E3174A79230E2057` |
+
+*Hashes mismatch confirms the authenticity of the local Vivado synthesis and implementation.*
