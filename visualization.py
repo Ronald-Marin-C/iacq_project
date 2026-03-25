@@ -24,6 +24,20 @@ BUFFER_SIZE = 1800
 SAMPLING_RATE = 360
 
 def load_all_waveforms(csv_path: str = "data/xNorm.csv"):
+    """Load all valid waveforms from the specified CSV file.
+
+    Args:
+        csv_path (str, optional): Path to the CSV dataset. Defaults to "data/xNorm.csv".
+
+    Returns:
+        list[bytes]: A list of parsed waveforms as byte arrays.
+
+    Raises:
+        FileNotFoundError: If the CSV file does not exist.
+
+    Example:
+        >>> waveforms = load_all_waveforms("data/xNorm.csv")
+    """
     if not os.path.exists(csv_path): raise FileNotFoundError(f"Dataset not found")
     waveforms = []
     with open(csv_path, "r") as f:
@@ -35,7 +49,22 @@ ALL_WAVEFORMS = load_all_waveforms()
 TOTAL_WAVEFORMS = len(ALL_WAVEFORMS)
 
 class MedicalDashboard(QtWidgets.QMainWindow):
+    """The Ultimate Secure Medical Dashboard using PyQt5 and PyQtGraph.
+    
+    Provides an advanced, real-time visualization of decrypted ECG data, 
+    heart rate trends, and a Poincaré map for HRV analysis.
+    """
+
     def __init__(self, fpga_instance: IACQ):
+        """Initialize the Ultimate Medical Dashboard.
+
+        Args:
+            fpga_instance (IACQ): An active instance of the IACQ connection class.
+
+        Example:
+            >>> fpga = IACQ('COM8', emulator=True)
+            >>> window = MedicalDashboard(fpga)
+        """
         super().__init__()
         self.fpga = fpga_instance
         self.frame_idx = 0
@@ -58,6 +87,7 @@ class MedicalDashboard(QtWidgets.QMainWindow):
         self.init_timers()
 
     def init_ui(self):
+        """Build and configure the Dashboard's UI layout, plots, and statistical panels."""
         self.central_widget = QtWidgets.QWidget()
         self.setCentralWidget(self.central_widget)
         self.grid = QtWidgets.QGridLayout(self.central_widget)
@@ -125,12 +155,17 @@ class MedicalDashboard(QtWidgets.QMainWindow):
         self.grid.addLayout(self.stats_panel, 0, 2, 2, 1)
 
     def init_timers(self):
+        """Initialize the PyQt timers for the GUI rendering and medical analysis loops."""
         self.gui_timer = QtCore.QTimer()
         self.gui_timer.timeout.connect(self.update_stream)
         self.analysis_timer = QtCore.QTimer()
         self.analysis_timer.timeout.connect(self.update_analysis)
 
     def toggle_pause(self):
+        """Toggle the monitoring state between paused and running.
+        
+        Updates the UI buttons and labels, and starts/stops the underlying timers.
+        """
         self.is_paused = not self.is_paused
         if self.is_paused:
             self.gui_timer.stop(); self.analysis_timer.stop()
@@ -143,6 +178,11 @@ class MedicalDashboard(QtWidgets.QMainWindow):
             self.alert_label.setText("STATUS: RUNNING")
 
     def update_stream(self):
+        """High-speed rendering loop for the ASCON-128 encrypted data stream.
+        
+        Processes the next waveform through the FPGA, increments the cryptographic 
+        nonce, and updates the live ECG plot buffer.
+        """
         waveform = ALL_WAVEFORMS[self.frame_idx % TOTAL_WAVEFORMS]
         self.frame_idx += 1
         
@@ -159,6 +199,11 @@ class MedicalDashboard(QtWidgets.QMainWindow):
         self.ecg_curve.setData(list(self.buffer))
 
     def update_analysis(self):
+        """Perform comprehensive mathematical and medical analysis on the ECG buffer.
+        
+        Uses NeuroKit2 to extract R-peaks, calculate heart rate, HRV metrics (SDNN, pNN50), 
+        and QRS duration. Updates the Heart Rate Trend plot, Poincaré map, and system alerts.
+        """
         if len(self.buffer) < 1000: return
         try:
             data = list(self.buffer)
@@ -220,6 +265,11 @@ class MedicalDashboard(QtWidgets.QMainWindow):
             print(f"Error en analisis: {e}")
 
     def closeEvent(self, event):
+        """Handle the window close event to safely terminate hardware connections.
+
+        Args:
+            event (QtGui.QCloseEvent): The close event triggered by the user.
+        """
         self.fpga.close_connection()
         event.accept()
 
