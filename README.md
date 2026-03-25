@@ -128,3 +128,21 @@ To verify that the hardware implementation was compiled locally rather than usin
 | `ECG.bit` (Custom Build) | `199AF6DE57FE0944A77803C650EF321CBA33B535B2859A36E3174A79230E2057` |
 
 *Hashes mismatch confirms the authenticity of the local Vivado synthesis and implementation.*
+
+
+## Advanced Features Implementation
+To go beyond the project requirements, we implemented the following optional advanced features:
+
+### 1. Advanced GUI Application (Interactive controls)
+The standard visualization was transformed into a full **Qt5 Graphical User Interface (`visualization.py`)**. This professional dashboard features:
+- **Separated Layouts:** ECG Plot (75% screen) separate from Medical Metrics (25%).
+- **Hardware Acceleration:** Using `pyqtgraph` to maintain high frame rates even with real-time decryption.
+- **Interactive Controls:** Implemented a user-controllable **Pause/Resume** button. This directly controls the software architecture by stopping and starting both the encryption/decryption loop and the neuro-signal processing threads.
+
+### 2. Arrhythmia Screening (NeuroKit2 Integration)
+Instead of just displaying raw heart rate, the dashboard integrates a real-time medical analysis engine:
+- **Dynamic Thresholding:** Automatically detects and flags **Tachycardia** (>100 BPM), **Bradycardia** (<60 BPM), or **Irregular Rhythms** (via HRV/QRS duration) with color-coded visual alerts.
+- **Advanced HRV:** Calculation of pNN50 and RMSSD metrics to assess autonomic nervous system balance.
+- **PQRST Delineation:** Calculation of precise **QRS Duration** for more detailed cardiac analysis.
+Sphinx
+pdoc3

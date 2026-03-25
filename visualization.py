@@ -1,183 +1,232 @@
 """
-Activity 3.2 & 3.3: Pro Medical Dashboard
-Displays a live-updating plot of ECG data alongside a dedicated
-UI panel for real-time HRV, BPM, and PQRST metrics.
+TP3: Ultimate Secure Medical Monitor
+Author: Ronald Marín
 """
 
+import sys
+import os
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 from collections import deque
 import logging
-import os
 import numpy as np
 import neurokit2 as nk
 from iacq import IACQ
 
-# --- 1. Mute Logs ---
+# --- 1. Configurations ---
 logging.getLogger('iacq').setLevel(logging.WARNING)
 logging.getLogger('FPGAEmulator').setLevel(logging.WARNING)
 
 TEST_KEY = bytes.fromhex("8A55114D1CB6A9A2BE263D4D7AECAAFF")
-TEST_NONCE = bytes.fromhex("4ED0EC0B98C529B7C8CDDF37BCD0284A")
+TEST_INITIAL_NONCE = bytes.fromhex("4ED0EC0B98C529B7C8CDDF37BCD0284A")
 TEST_AD = b"A to B"
-BUFFER_SIZE = 1800  # 5 seconds at 360 Hz
+BUFFER_SIZE = 1800 
+SAMPLING_RATE = 360
 
-def load_all_waveforms(csv_path: str = "data/xNorm.csv") -> list[bytes]:
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"Dataset not found at {csv_path}")
+def load_all_waveforms(csv_path: str = "data/xNorm.csv"):
+    if not os.path.exists(csv_path): raise FileNotFoundError(f"Dataset not found")
     waveforms = []
     with open(csv_path, "r") as f:
         for line in f:
-            if hex_str := line.strip():
-                waveforms.append(bytes.fromhex(hex_str))
+            if hex_str := line.strip(): waveforms.append(bytes.fromhex(hex_str))
     return waveforms
 
-waveforms = load_all_waveforms()
-total_waveforms = len(waveforms)
+ALL_WAVEFORMS = load_all_waveforms()
+TOTAL_WAVEFORMS = len(ALL_WAVEFORMS)
 
-fpga = IACQ(port='COM8', emulator=True)
-fpga.open_connection()
+class MedicalDashboard(QtWidgets.QMainWindow):
+    def __init__(self, fpga_instance: IACQ):
+        super().__init__()
+        self.fpga = fpga_instance
+        self.frame_idx = 0
+        self.buffer = deque(maxlen=BUFFER_SIZE)
+        self.bpm_history = deque(maxlen=60)
+        
+        # Historial para Poincaré (nube persistente)
+        self.poincare_x = deque(maxlen=500)
+        self.poincare_y = deque(maxlen=500)
+        
+        self.is_paused = True 
+        self.current_nonce = TEST_INITIAL_NONCE
+        self.last_tag_str = "WAITING..." # Variable segura para el tag
+        
+        self.setWindowTitle("Ultimate Secure Medical Dashboard - ASCON-128")
+        self.resize(1400, 850)
+        self.setStyleSheet("background-color: #0b0e14; color: #e0e0e0;")
 
-# --- 2. Build the Pro UI Dashboard ---
-app = QtWidgets.QApplication([])
-main_window = QtWidgets.QWidget()
-main_window.setWindowTitle("Advanced ASCON-128 Medical Dashboard")
-main_window.resize(1200, 600)
-main_window.setStyleSheet("background-color: #121212; color: white;") # Dark mode
+        self.init_ui()
+        self.init_timers()
 
-# Main Layout (Horizontal: Plot left, Stats right)
-layout = QtWidgets.QHBoxLayout()
-main_window.setLayout(layout)
+    def init_ui(self):
+        self.central_widget = QtWidgets.QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.grid = QtWidgets.QGridLayout(self.central_widget)
 
-# --- Left Side: Clean ECG Plot ---
-plot_widget = pg.PlotWidget(title="Live Decrypted ECG Stream")
-plot_widget.setLabel('bottom', "Samples")
-plot_widget.setLabel('left', "Amplitude")
-plot_widget.setYRange(0, 255)
-plot_widget.setXRange(0, BUFFER_SIZE)
-plot_widget.showGrid(x=True, y=True, alpha=0.3)
-curve = plot_widget.plot(pen=pg.mkPen(color='#ff3333', width=2.5))
+        # --- 1. Main ECG Plot (Top Left) ---
+        self.ecg_plot = pg.PlotWidget(title="LIVE DECRYPTED ECG")
+        self.ecg_plot.setYRange(0, 255)
+        self.ecg_curve = self.ecg_plot.plot(pen=pg.mkPen(color='#00ff00', width=2))
+        self.grid.addWidget(self.ecg_plot, 0, 0, 1, 2)
 
-layout.addWidget(plot_widget, stretch=3) # Takes 75% of screen
+        # --- 2. HR Trend (Bottom Left) ---
+        self.trend_plot = pg.PlotWidget(title="HEART RATE TREND (BPM)")
+        self.trend_plot.setYRange(40, 140)
+        self.trend_curve = self.trend_plot.plot(pen=pg.mkPen(color='#ff3333', width=2), symbol='o', symbolSize=4)
+        self.grid.addWidget(self.trend_plot, 1, 0, 1, 1)
 
-# --- Right Side: Medical Stats Panel ---
-stats_layout = QtWidgets.QVBoxLayout()
+        # --- 3. Poincaré Plot (Bottom Center) ---
+        self.poincare_plot = pg.PlotWidget(title="POINCARÉ MAP (RR_n vs RR_n+1)")
+        self.poincare_plot.setLabel('left', "RR_n+1 (ms)")
+        self.poincare_plot.setLabel('bottom', "RR_n (ms)")
+        
+        # Línea roja de identidad arreglada (pos=[0,0])
+        self.identity_line = pg.InfiniteLine(pos=[0, 0], angle=45, pen=pg.mkPen(color='#ff3333', width=1.5, style=QtCore.Qt.DashLine))
+        self.poincare_plot.addItem(self.identity_line)
+        
+        self.poincare_scatter = pg.ScatterPlotItem(size=8, brush=pg.mkBrush(0, 255, 255, 150))
+        self.poincare_plot.addItem(self.poincare_scatter)
+        self.grid.addWidget(self.poincare_plot, 1, 1, 1, 1)
 
-title_label = QtWidgets.QLabel("PATIENT METRICS")
-title_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #888888;")
+        # --- 4. Controls & Stats (Right Side) ---
+        self.stats_panel = QtWidgets.QVBoxLayout()
+        
+        # Fuentes más grandes
+        self.bpm_display = QtWidgets.QLabel("-- BPM")
+        self.bpm_display.setStyleSheet("font-size: 80px; font-weight: bold; color: #00ff00;")
+        
+        self.info_label = QtWidgets.QLabel("SDNN: -- ms\npNN50: -- %\nQRS: -- ms")
+        self.info_label.setStyleSheet("font-size: 22px; color: #aaaaaa; line-height: 1.5;")
+        
+        # System Status Box Expandido
+        self.status_box = QtWidgets.QLabel("SYSTEM STATUS WAITING...")
+        self.status_box.setStyleSheet("""
+            font-family: 'Consolas', monospace; font-size: 18px; color: #81c784; 
+            background: #1a1f26; padding: 15px; border-radius: 8px; border: 1px solid #333;
+        """)
+        
+        self.alert_label = QtWidgets.QLabel("STATUS: IDLE")
+        self.alert_label.setStyleSheet("font-size: 28px; font-weight: bold; color: #555;")
 
-bpm_label = QtWidgets.QLabel("HR: -- BPM")
-bpm_label.setStyleSheet("font-size: 48px; font-weight: bold; color: #ff3333;")
+        self.btn = QtWidgets.QPushButton("START MONITOR")
+        self.btn.setStyleSheet("background: #388e3c; color: white; padding: 20px; font-weight: bold; font-size: 22px; border-radius: 10px;")
+        self.btn.clicked.connect(self.toggle_pause)
 
-hrv_sdnn_label = QtWidgets.QLabel("SDNN: -- ms")
-hrv_sdnn_label.setStyleSheet("font-size: 20px; color: #aaaaaa;")
+        # Añadimos todo al panel derecho
+        self.stats_panel.addWidget(QtWidgets.QLabel("VITAL SIGNS"), 0, QtCore.Qt.AlignCenter)
+        self.stats_panel.addWidget(self.bpm_display, 0, QtCore.Qt.AlignCenter)
+        self.stats_panel.addWidget(self.info_label)
+        self.stats_panel.addSpacing(20)
+        self.stats_panel.addWidget(QtWidgets.QLabel("SYSTEM INFO"))
+        self.stats_panel.addWidget(self.status_box)
+        self.stats_panel.addStretch()
+        self.stats_panel.addWidget(self.alert_label, 0, QtCore.Qt.AlignCenter)
+        self.stats_panel.addWidget(self.btn)
 
-hrv_rmssd_label = QtWidgets.QLabel("RMSSD: -- ms")
-hrv_rmssd_label.setStyleSheet("font-size: 20px; color: #aaaaaa;")
+        self.grid.addLayout(self.stats_panel, 0, 2, 2, 1)
 
-hrv_pnn50_label = QtWidgets.QLabel("pNN50: -- %")
-hrv_pnn50_label.setStyleSheet("font-size: 20px; color: #aaaaaa;")
+    def init_timers(self):
+        self.gui_timer = QtCore.QTimer()
+        self.gui_timer.timeout.connect(self.update_stream)
+        self.analysis_timer = QtCore.QTimer()
+        self.analysis_timer.timeout.connect(self.update_analysis)
 
-pqrst_label = QtWidgets.QLabel("QRS Duration: -- ms")
-pqrst_label.setStyleSheet("font-size: 20px; color: #aaaaaa;")
+    def toggle_pause(self):
+        self.is_paused = not self.is_paused
+        if self.is_paused:
+            self.gui_timer.stop(); self.analysis_timer.stop()
+            self.btn.setText("RESUME MONITOR"); self.btn.setStyleSheet("background: #388e3c; color: white; padding: 20px; font-weight: bold; font-size: 22px; border-radius: 10px;")
+            self.alert_label.setText("STATUS: PAUSED")
+            self.alert_label.setStyleSheet("font-size: 28px; font-weight: bold; color: #555;")
+        else:
+            self.gui_timer.start(25); self.analysis_timer.start(1000)
+            self.btn.setText("PAUSE MONITOR"); self.btn.setStyleSheet("background: #fbc02d; color: black; padding: 20px; font-weight: bold; font-size: 22px; border-radius: 10px;")
+            self.alert_label.setText("STATUS: RUNNING")
 
-status_label = QtWidgets.QLabel("STATUS: ANALYZING...")
-status_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #ffb74d;")
+    def update_stream(self):
+        waveform = ALL_WAVEFORMS[self.frame_idx % TOTAL_WAVEFORMS]
+        self.frame_idx += 1
+        
+        ct, tag = self.fpga.encrypt_on_fpga(waveform, TEST_KEY, self.current_nonce, TEST_AD)
+        decrypted = self.fpga.decrypt_waveform(ct, tag, TEST_KEY, self.current_nonce, TEST_AD)
+        
+        # Guardamos el tag completo en Hex
+        self.last_tag_str = tag.hex().upper()
+        
+        n_int = int.from_bytes(self.current_nonce, 'big') + 1
+        self.current_nonce = n_int.to_bytes(16, 'big')
 
-# Add widgets to the right panel in logical order
-stats_layout.addWidget(title_label)
-stats_layout.addSpacing(30)
-stats_layout.addWidget(bpm_label)
-stats_layout.addSpacing(15)
-stats_layout.addWidget(hrv_sdnn_label)
-stats_layout.addWidget(hrv_rmssd_label)
-stats_layout.addWidget(hrv_pnn50_label)
-stats_layout.addWidget(pqrst_label) # Grouped with the other metrics
-stats_layout.addSpacing(40)
-stats_layout.addWidget(status_label)
-stats_layout.addStretch() # Pushes everything to the top
+        self.buffer.extend(list(decrypted))
+        self.ecg_curve.setData(list(self.buffer))
 
-stats_widget = QtWidgets.QWidget()
-stats_widget.setLayout(stats_layout)
-layout.addWidget(stats_widget, stretch=1) # Takes 25% of screen
+    def update_analysis(self):
+        if len(self.buffer) < 1000: return
+        try:
+            data = list(self.buffer)
+            ecg_c = nk.ecg_clean(data, sampling_rate=360)
+            _, p_info = nk.ecg_peaks(ecg_c, sampling_rate=360)
+            rpeaks = p_info["ECG_R_Peaks"]
 
-buffer = deque(maxlen=BUFFER_SIZE)
-frame_idx = 0
+            if len(rpeaks) > 2:
+                rr = np.diff(rpeaks) / 360 * 1000
+                bpm = 60000 / np.mean(rr)
+                
+                # Update UI
+                self.bpm_display.setText(f"{bpm:.0f} BPM")
+                self.bpm_history.append(bpm)
+                self.trend_curve.setData(list(self.bpm_history))
+                
+                # Poincaré Math: Acumular puntos
+                self.poincare_x.extend(rr[:-1])
+                self.poincare_y.extend(rr[1:])
+                self.poincare_scatter.setData(list(self.poincare_x), list(self.poincare_y))
+                
+                # HRV & QRS
+                sdnn = np.std(rr)
+                pnn50 = 100 * np.sum(np.abs(np.diff(rr)) > 50) / len(rr)
+                
+                _, waves = nk.ecg_delineate(ecg_c, rpeaks, sampling_rate=360, method="dwt")
+                q_p = [x for x in waves.get('ECG_Q_Peaks', []) if not np.isnan(x)]
+                s_p = [x for x in waves.get('ECG_S_Peaks', []) if not np.isnan(x)]
+                qrs_val = "N/A"
+                if len(q_p) > 0 and len(s_p) > 0:
+                    qrs_val = f"{np.mean(np.array(s_p[:min(len(q_p), len(s_p))]) - np.array(q_p[:min(len(q_p), len(s_p))])) / 360 * 1000:.1f}"
 
-# --- 3. Logic & Timers ---
-def update_gui():
-    """Ultra-fast rendering loop."""
-    global frame_idx
-    waveform = waveforms[frame_idx % total_waveforms]
-    frame_idx += 1
+                self.info_label.setText(f"SDNN: {sdnn:.1f} ms\npNN50: {pnn50:.1f} %\nQRS: {qrs_val} ms")
+                
+                # Status Box Expandido y Seguro
+                buffer_sec = len(self.buffer) / 360
+                tag_format = f"{self.last_tag_str[:16]}\n      {self.last_tag_str[16:]}" if len(self.last_tag_str) > 16 else self.last_tag_str
+                
+                status_text = (
+                    f"MODE: EMULATOR\n"
+                    f"BAUD: 115200\n"
+                    f"WAVE: {self.frame_idx % TOTAL_WAVEFORMS}\n"
+                    f"BUFF: {buffer_sec:.1f}s ({len(self.buffer)} pts)\n"
+                    f"TAG : {tag_format}"
+                )
+                self.status_box.setText(status_text)
+                
+                # Alertas
+                if bpm > 100: 
+                    self.alert_label.setText("⚠️ TACHYCARDIA")
+                    self.alert_label.setStyleSheet("color: #ff3333; font-weight: bold; font-size: 28px;")
+                elif bpm < 60: 
+                    self.alert_label.setText("⚠️ BRADYCARDIA")
+                    self.alert_label.setStyleSheet("color: #4fc3f7; font-weight: bold; font-size: 28px;")
+                else: 
+                    self.alert_label.setText("✅ NORMAL")
+                    self.alert_label.setStyleSheet("color: #81c784; font-weight: bold; font-size: 28px;")
+        except Exception as e:
+            print(f"Error en analisis: {e}")
 
-    ciphertext, tag = fpga.encrypt_on_fpga(waveform, TEST_KEY, TEST_NONCE, TEST_AD)
-    decrypted = fpga.decrypt_waveform(ciphertext, tag, TEST_KEY, TEST_NONCE, TEST_AD)
-
-    buffer.extend(list(decrypted))
-    curve.setData(list(buffer))
-
-def update_analysis():
-    """Heavy mathematical processing loop."""
-    if len(buffer) < 1000: 
-        return
-
-    try:
-        current_data = list(buffer)
-        ecg_cleaned = nk.ecg_clean(current_data, sampling_rate=360)
-        _, peaks_info = nk.ecg_peaks(ecg_cleaned, sampling_rate=360)
-        rpeaks = peaks_info["ECG_R_Peaks"]
-
-        if len(rpeaks) > 1:
-            # 1. Calculate BPM & HRV
-            rr_intervals = np.diff(rpeaks) / 360 * 1000  # ms
-            bpm = 60000 / np.mean(rr_intervals)
-            sdnn = np.std(rr_intervals)
-            rmssd = np.sqrt(np.mean(np.diff(rr_intervals)**2))
-            pnn50 = 100 * np.sum(np.abs(np.diff(rr_intervals)) > 50) / len(rr_intervals)
-            
-            # 2. Delineate PQRST
-            _, waves = nk.ecg_delineate(ecg_cleaned, rpeaks, sampling_rate=360, method="dwt")
-            q_peaks = [x for x in waves.get('ECG_Q_Peaks', []) if not np.isnan(x)]
-            s_peaks = [x for x in waves.get('ECG_S_Peaks', []) if not np.isnan(x)]
-            
-            # 3. Update UI Strings Safely
-            bpm_label.setText(f"HR: {bpm:.0f} BPM")
-            hrv_sdnn_label.setText(f"SDNN: {sdnn:.1f} ms")
-            hrv_rmssd_label.setText(f"RMSSD: {rmssd:.1f} ms")
-            hrv_pnn50_label.setText(f"pNN50: {pnn50:.1f} %")
-
-            if len(q_peaks) > 0 and len(s_peaks) > 0:
-                min_len = min(len(q_peaks), len(s_peaks))
-                qrs_duration = np.mean(np.array(s_peaks[:min_len]) - np.array(q_peaks[:min_len])) / 360 * 1000
-                pqrst_label.setText(f"QRS Duration: {qrs_duration:.1f} ms")
-
-            # 4. Dynamic Status Alert
-            if bpm > 100:
-                status_label.setText("STATUS: TACHYCARDIA")
-                status_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #ff3333;") # Red
-            elif bpm < 60:
-                status_label.setText("STATUS: BRADYCARDIA")
-                status_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #4fc3f7;") # Blue
-            else:
-                status_label.setText("STATUS: NORMAL")
-                status_label.setStyleSheet("font-size: 22px; font-weight: bold; color: #81c784;") # Green
-    except Exception:
-        pass
-
-# Start timers
-gui_timer = QtCore.QTimer()
-gui_timer.timeout.connect(update_gui)
-gui_timer.start(25)
-
-analysis_timer = QtCore.QTimer()
-analysis_timer.timeout.connect(update_analysis)
-analysis_timer.start(1000)
+    def closeEvent(self, event):
+        self.fpga.close_connection()
+        event.accept()
 
 if __name__ == '__main__':
-    print("Starting Pro Medical Dashboard...")
-    main_window.show()
-    try:
-        app.exec_()
-    finally:
-        fpga.close_connection()
+    app = QtWidgets.QApplication(sys.argv)
+    fpga_conn = IACQ(port='COM8', emulator=True)
+    fpga_conn.open_connection()
+    dash = MedicalDashboard(fpga_conn)
+    dash.show()
+    sys.exit(app.exec_())
