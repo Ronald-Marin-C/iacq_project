@@ -199,42 +199,43 @@ class MedicalDashboard(QtWidgets.QMainWindow):
         self.ecg_curve.setData(list(self.buffer))
 
     def update_analysis(self):
-        """Perform comprehensive mathematical and medical analysis on the ECG buffer.
+        # Aumentamos a 1200 puntos (~3.3 segundos) para dar estabilidad a NeuroKit
+        if len(self.buffer) < 1200: return 
         
-        Uses NeuroKit2 to extract R-peaks, calculate heart rate, HRV metrics (SDNN, pNN50), 
-        and QRS duration. Updates the Heart Rate Trend plot, Poincaré map, and system alerts.
-        """
-        if len(self.buffer) < 1000: return
         try:
             data = list(self.buffer)
             ecg_c = nk.ecg_clean(data, sampling_rate=360)
             _, p_info = nk.ecg_peaks(ecg_c, sampling_rate=360)
             rpeaks = p_info["ECG_R_Peaks"]
 
-            if len(rpeaks) > 2:
+            # Necesitamos al menos 3 o 4 picos para que la delineación no falle
+            if len(rpeaks) > 3:
                 rr = np.diff(rpeaks) / 360 * 1000
                 bpm = 60000 / np.mean(rr)
                 
-                # Update UI
                 self.bpm_display.setText(f"{bpm:.0f} BPM")
                 self.bpm_history.append(bpm)
                 self.trend_curve.setData(list(self.bpm_history))
                 
-                # Poincaré Math: Acumular puntos
                 self.poincare_x.extend(rr[:-1])
                 self.poincare_y.extend(rr[1:])
                 self.poincare_scatter.setData(list(self.poincare_x), list(self.poincare_y))
                 
-                # HRV & QRS
                 sdnn = np.std(rr)
                 pnn50 = 100 * np.sum(np.abs(np.diff(rr)) > 50) / len(rr)
                 
-                _, waves = nk.ecg_delineate(ecg_c, rpeaks, sampling_rate=360, method="dwt")
-                q_p = [x for x in waves.get('ECG_Q_Peaks', []) if not np.isnan(x)]
-                s_p = [x for x in waves.get('ECG_S_Peaks', []) if not np.isnan(x)]
+                # Intentamos la delineación, pero con un try interno para evitar el error de "too small"
                 qrs_val = "N/A"
-                if len(q_p) > 0 and len(s_p) > 0:
-                    qrs_val = f"{np.mean(np.array(s_p[:min(len(q_p), len(s_p))]) - np.array(q_p[:min(len(q_p), len(s_p))])) / 360 * 1000:.1f}"
+                try:
+                    _, waves = nk.ecg_delineate(ecg_c, rpeaks, sampling_rate=360, method="dwt")
+                    q_p = [x for x in waves.get('ECG_Q_Peaks', []) if not np.isnan(x)]
+                    s_p = [x for x in waves.get('ECG_S_Peaks', []) if not np.isnan(x)]
+                    
+                    if len(q_p) > 0 and len(s_p) > 0:
+                        qrs_val = f"{np.mean(np.array(s_p[:min(len(q_p), len(s_p))]) - np.array(q_p[:min(len(q_p), len(s_p))])) / 360 * 1000:.1f}"
+                except:
+                    # Si falla la segmentación, simplemente mantenemos el QRS en N/A
+                    pass
 
                 self.info_label.setText(f"SDNN: {sdnn:.1f} ms\npNN50: {pnn50:.1f} %\nQRS: {qrs_val} ms")
                 

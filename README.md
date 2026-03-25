@@ -45,6 +45,9 @@ This library supports both physical hardware and a software emulator for develop
 
 - **Emulator Mode:** Set `emulator=True` (the `port` parameter is ignored). This routes all communication through the `FPGAEmulator` class, simulating hardware delays and ASCON cryptography locally.
 
+> **⚠️ Why code that works in the emulator may fail on hardware:**
+> The emulator runs entirely in software, so it has no timing constraints or memory limits. The physical FPGA board introduces **real propagation delays** between commands and operates with **limited internal buffers**. If commands are sent too fast or data exceeds buffer capacity, the board may drop bytes or return unexpected responses. Always add appropriate delays between UART commands when running on hardware and verify your baud rate is set to `115200`.
+
 ## Troubleshooting
 
 | Problem | Cause | Solution |
@@ -54,21 +57,24 @@ This library supports both physical hardware and a software emulator for develop
 | `FPGAValidationError` | Incorrect data type or length. | Ensure keys and nonces are exactly 16 bytes and passed as `bytes` objects, not strings. |
 | No Logs Output | Emulators overriding the logging configuration. | Ensure `logger.propagate = False` is set in your main script configuration. |
 
+---
 
-# Session 2 Notes - Ronald Marín
-
-## 1. Encryption Protocol
+## Encryption Protocol
 
 ### Command Sequence
-1. K - Load encryption key (16 bytes)
-2. N - Set nonce (16 bytes)
-3. A - Set associated data (padded to 10 bytes)
-4. W - Send waveform data (padded to 184 bytes)
-5. G - Start encryption
-6. T - Retrieve authentication tag (16 bytes)
-7. C - Retrieve ciphertext (181 bytes extracted from 184 bytes)
+
+The FPGA communication follows a strict 7-step command sequence:
+
+1. `K` — Load encryption key (16 bytes)
+2. `N` — Set nonce (16 bytes)
+3. `A` — Set associated data (padded to 10 bytes)
+4. `W` — Send waveform data (padded to 184 bytes)
+5. `G` — Start encryption
+6. `T` — Retrieve authentication tag (16 bytes)
+7. `C` — Retrieve ciphertext (181 bytes extracted from 184 bytes)
 
 ### Flow Diagram
+
 ```text
 [Plaintext Waveform 181B] + [Padding 3B]
            |
@@ -79,28 +85,22 @@ This library supports both physical hardware and a software emulator for develop
            |
            v
 [Ciphertext 181B] + [Tag 16B]
+```
 
-
-
-
-
-Q8
-Why might code work in the emulator but fail on hardware?
-
-The emulator uses different encryption
-Hardware has physical delays and limited buffers
-Python behaves differently with hardware
-The FPGA has a different protocol
+---
 
 ## Performance Benchmarking
+
 To verify the system's readiness for real-time medical monitoring, a stress test was conducted using the full encryption/decryption pipeline.
 
 ### Test Configuration
-- **Dataset:** 5,000 ECG waveforms (181 bytes each).
-- **Mode:** FPGA Emulator (simulated UART @ 115200 baud).
-- **Operations per cycle:** 7 UART commands (K, N, A, W, G, T, C) + Python-side ASCON decryption.
+
+- **Dataset:** 5,000 ECG waveforms (181 bytes each)
+- **Mode:** FPGA Emulator (simulated UART @ 115200 baud)
+- **Operations per cycle:** 7 UART commands (K, N, A, W, G, T, C) + Python-side ASCON decryption
 
 ### Results
+
 | Metric | Value |
 | :--- | :--- |
 | **Total Processed** | 5,000 waveforms |
@@ -110,16 +110,23 @@ To verify the system's readiness for real-time medical monitoring, a stress test
 
 **Analysis:** With a throughput of nearly 8 waveforms per second, the system is ~8x faster than a standard human heart rate (60 BPM / 1 Hz). This provides a significant safety margin for real-time processing, even during high-stress physiological conditions (tachycardia) or multi-sensor environments.
 
+---
 
 ## Security Analysis: The Danger of Nonce Reuse
+
 This project includes a formal security test suite (`tests/test_security.py`) to validate ASCON-128 AEAD properties. Beyond standard Bit-Flip and Wrong-Key tests, we implemented a specific test demonstrating **Nonce Reuse vulnerabilities**.
 
 Unlike standard stream ciphers where nonce reuse leaks the XOR of the entire plaintext, ASCON utilizes a **Sponge Construction**. Our tests successfully prove that:
+
 1. Reusing a nonce perfectly leaks the XOR of the plaintexts **only for the first block** (the 8-byte rate of ASCON-128).
 2. After the first difference, the internal sponge state diverges, protecting the rest of the message.
+
 This demonstrates both the vulnerability of poor nonce management and the resilience of the sponge architecture.
 
+---
+
 ## Hardware Authenticity (Bitstream Verification)
+
 To verify that the hardware implementation was compiled locally rather than using pre-compiled binaries, SHA-256 hashes were computed for the generated bitstreams. Vivado embeds unique build timestamps, ensuring unique binaries even for identical source code.
 
 | File | SHA-256 Hash |
@@ -129,20 +136,22 @@ To verify that the hardware implementation was compiled locally rather than usin
 
 *Hashes mismatch confirms the authenticity of the local Vivado synthesis and implementation.*
 
+---
 
-## Advanced Features Implementation
-To go beyond the project requirements, we implemented the following optional advanced features:
+## Advanced Features
 
-### 1. Advanced GUI Application (Interactive controls)
+### 1. Advanced GUI Application
+
 The standard visualization was transformed into a full **Qt5 Graphical User Interface (`visualization.py`)**. This professional dashboard features:
+
 - **Separated Layouts:** ECG Plot (75% screen) separate from Medical Metrics (25%).
 - **Hardware Acceleration:** Using `pyqtgraph` to maintain high frame rates even with real-time decryption.
-- **Interactive Controls:** Implemented a user-controllable **Pause/Resume** button. This directly controls the software architecture by stopping and starting both the encryption/decryption loop and the neuro-signal processing threads.
+- **Interactive Controls:** A user-controllable **Pause/Resume** button that directly controls the encryption/decryption loop and the neuro-signal processing threads.
 
 ### 2. Arrhythmia Screening (NeuroKit2 Integration)
+
 Instead of just displaying raw heart rate, the dashboard integrates a real-time medical analysis engine:
+
 - **Dynamic Thresholding:** Automatically detects and flags **Tachycardia** (>100 BPM), **Bradycardia** (<60 BPM), or **Irregular Rhythms** (via HRV/QRS duration) with color-coded visual alerts.
 - **Advanced HRV:** Calculation of pNN50 and RMSSD metrics to assess autonomic nervous system balance.
 - **PQRST Delineation:** Calculation of precise **QRS Duration** for more detailed cardiac analysis.
-Sphinx
-pdoc3
