@@ -163,3 +163,9 @@ Instead of just displaying raw heart rate, the dashboard integrates a real-time 
 - **Dynamic Thresholding:** Automatically detects and flags **Tachycardia** (>100 BPM), **Bradycardia** (<60 BPM), or **Irregular Rhythms** (via HRV/QRS duration) with color-coded visual alerts.
 - **Advanced HRV:** Calculation of pNN50 and RMSSD metrics to assess autonomic nervous system balance.
 - **PQRST Delineation:** Calculation of precise **QRS Duration** for more detailed cardiac analysis.
+-e 
+---
+
+## Author
+
+Developed by **Ronald Marín Cardona**.
