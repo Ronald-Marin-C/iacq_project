@@ -37,6 +37,14 @@ except FPGAError as e:
     print(f"FPGA Operation Failed: {e}")
 ```
 
+## Running the Application
+
+The Quick Start section above shows how to use the library programmatically. To run the full application with the real-time ECG dashboard, simply execute:
+
+```bash
+python visualization.py
+```
+
 ## Hardware vs. Emulator Usage
 
 This library supports both physical hardware and a software emulator for development without the FPGA board.
